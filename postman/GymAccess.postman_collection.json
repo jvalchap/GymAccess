@@ -1,0 +1,1972 @@
+{
+  "info": {
+    "name": "GymAccess API",
+    "description": "Casos de ingreso del challenge: 1 aprobado (más variantes) y 1 rechazo por cada motivo (NoActiveMembership, OverdueDebt, OutsideTimeSlot, NoCredits), más créditos/reingreso y errores.\n\n**Cómo correrla:** levantar la API (`dotnet run --project src/GymAccess`, puerto 5080) y ejecutar la colección completa en el Collection Runner (o `newman run postman/GymAccess.postman_collection.json`). No requiere datos previos: cada carpeta crea su propio socio con un DNI aleatorio, y las fechas/franjas se calculan relativas al momento de la ejecución. Cada request trae sus tests con la respuesta esperada.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Fechas y franjas relativas a 'ahora' en Buenos Aires (UTC-3, sin horario de verano),",
+          "// que es la zona horaria que usa la API por defecto (appsettings.json → Gym:TimeZoneId).",
+          "const pad = n => String(n).padStart(2, '0');",
+          "const ymd = d => d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate());",
+          "const arNow = new Date(Date.now() - 3 * 3600 * 1000);",
+          "const day = n => ymd(new Date(arNow.getTime() + n * 86400000));",
+          "const h = arNow.getUTCHours();",
+          "const set = (k, v) => pm.collectionVariables.set(k, v);",
+          "set('today', day(0));",
+          "set('yesterday', day(-1));",
+          "set('ago30', day(-30));",
+          "set('ago60', day(-60));",
+          "set('in30', day(30));",
+          "// Franja que incluye la hora actual (hora-1 a hora+1:59) y franja que no la incluye (hora+3 a hora+4).",
+          "set('slotInsideStart', pad((h + 23) % 24) + ':00');",
+          "set('slotInsideEnd', pad((h + 1) % 24) + ':59');",
+          "set('slotOutsideStart', pad((h + 3) % 24) + ':00');",
+          "set('slotOutsideEnd', pad((h + 4) % 24) + ':00');"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5080"
+    }
+  ],
+  "item": [
+    {
+      "name": "1 · APROBADO · membresía vigente e ilimitada",
+      "description": "Caso feliz: membresía vigente, sin créditos ni franja, sin deudas.",
+      "item": [
+        {
+          "name": "Crear socio",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// DNI aleatorio de 8 dígitos para que la colección se pueda correr muchas veces",
+                  "pm.collectionVariables.set('dni', String(20000000 + Math.floor(Math.random() * 70000000)));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('memberId', b.id);",
+                  "pm.test('devuelve el DNI del socio', () => pm.expect(b.dni).to.eql(pm.collectionVariables.get('dni')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members"
+              ]
+            },
+            "description": "**Esperado:** 201 Created con `{ id, name, dni }`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Socio de prueba\",\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Asignar membresía ilimitada",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('credits = null (ilimitada)', () => pm.expect(b.credits).to.eql(null));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members/{{memberId}}/memberships",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members",
+                "{{memberId}}",
+                "memberships"
+              ]
+            },
+            "description": "**Esperado:** 201 con `credits: null`, `slotStart: null`, `slotEnd: null`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startDate\": \"{{ago30}}\",\n  \"endDate\": \"{{in30}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Check-in → APROBADO",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('allowed = true', () => pm.expect(b.allowed).to.eql(true));",
+                  "pm.test('reason = null', () => pm.expect(b.reason).to.eql(null));",
+                  "pm.test('creditConsumed = false', () => pm.expect(b.creditConsumed).to.eql(false));",
+                  "pm.test('creditsRemaining = None', () => pm.expect(b.creditsRemaining).to.eql(null));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/check-ins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "check-ins"
+              ]
+            },
+            "description": "**Esperado:** 200 OK con `allowed: true`, `reason: null`. `creditConsumed: false`, `creditsRemaining: null`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2 · APROBADO · dentro de la franja horaria",
+      "description": "La franja se calcula a partir de la hora actual en Buenos Aires (UTC-3), así que incluye el momento de la ejecución.",
+      "item": [
+        {
+          "name": "Crear socio",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// DNI aleatorio de 8 dígitos para que la colección se pueda correr muchas veces",
+                  "pm.collectionVariables.set('dni', String(20000000 + Math.floor(Math.random() * 70000000)));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('memberId', b.id);",
+                  "pm.test('devuelve el DNI del socio', () => pm.expect(b.dni).to.eql(pm.collectionVariables.get('dni')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members"
+              ]
+            },
+            "description": "**Esperado:** 201 Created con `{ id, name, dni }`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Socio de prueba\",\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Asignar membresía con franja que incluye la hora actual",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('tiene franja', () => pm.expect(b.slotStart).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members/{{memberId}}/memberships",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members",
+                "{{memberId}}",
+                "memberships"
+              ]
+            },
+            "description": "**Esperado:** 201 con `slotStart` y `slotEnd`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startDate\": \"{{ago30}}\",\n  \"endDate\": \"{{in30}}\",\n  \"slotStart\": \"{{slotInsideStart}}\",\n  \"slotEnd\": \"{{slotInsideEnd}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Check-in → APROBADO",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('allowed = true', () => pm.expect(b.allowed).to.eql(true));",
+                  "pm.test('reason = null', () => pm.expect(b.reason).to.eql(null));",
+                  "pm.test('creditConsumed = false', () => pm.expect(b.creditConsumed).to.eql(false));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/check-ins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "check-ins"
+              ]
+            },
+            "description": "**Esperado:** 200 OK con `allowed: true`, `reason: null`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3 · RECHAZADO · NoActiveMembership",
+      "description": "Regla 1: el socio tiene una membresía, pero venció ayer.",
+      "item": [
+        {
+          "name": "Crear socio",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// DNI aleatorio de 8 dígitos para que la colección se pueda correr muchas veces",
+                  "pm.collectionVariables.set('dni', String(20000000 + Math.floor(Math.random() * 70000000)));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('memberId', b.id);",
+                  "pm.test('devuelve el DNI del socio', () => pm.expect(b.dni).to.eql(pm.collectionVariables.get('dni')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members"
+              ]
+            },
+            "description": "**Esperado:** 201 Created con `{ id, name, dni }`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Socio de prueba\",\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Asignar membresía vencida ayer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members/{{memberId}}/memberships",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members",
+                "{{memberId}}",
+                "memberships"
+              ]
+            },
+            "description": "**Esperado:** 201 (se puede cargar una membresía ya vencida).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startDate\": \"{{ago60}}\",\n  \"endDate\": \"{{yesterday}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Check-in → RECHAZADO (membresía no vigente)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('allowed = false', () => pm.expect(b.allowed).to.eql(false));",
+                  "pm.test('reason = \"NoActiveMembership\"', () => pm.expect(b.reason).to.eql(\"NoActiveMembership\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/check-ins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "check-ins"
+              ]
+            },
+            "description": "**Esperado:** 200 OK con `allowed: false`, `reason: \"NoActiveMembership\"`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4 · RECHAZADO · OverdueDebt (tolerancia y pago)",
+      "description": "Regla 2. La tolerancia por defecto es 1000 (appsettings.json → Gym:DebtTolerance). Una deuda de 500 vencida se tolera; sumando una de 5000 se rechaza; al pagarla, vuelve a entrar.",
+      "item": [
+        {
+          "name": "Crear socio",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// DNI aleatorio de 8 dígitos para que la colección se pueda correr muchas veces",
+                  "pm.collectionVariables.set('dni', String(20000000 + Math.floor(Math.random() * 70000000)));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('memberId', b.id);",
+                  "pm.test('devuelve el DNI del socio', () => pm.expect(b.dni).to.eql(pm.collectionVariables.get('dni')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members"
+              ]
+            },
+            "description": "**Esperado:** 201 Created con `{ id, name, dni }`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Socio de prueba\",\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Asignar membresía ilimitada",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members/{{memberId}}/memberships",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members",
+                "{{memberId}}",
+                "memberships"
+              ]
+            },
+            "description": "**Esperado:** 201.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startDate\": \"{{ago30}}\",\n  \"endDate\": \"{{in30}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Registrar deuda de 500 vencida ayer (dentro de la tolerancia)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('estado Pending', () => pm.expect(b.status).to.eql('Pending'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members/{{memberId}}/debts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members",
+                "{{memberId}}",
+                "debts"
+              ]
+            },
+            "description": "**Esperado:** 201 con `status: \"Pending\"`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 500,\n  \"dueDate\": \"{{yesterday}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Check-in con 500 vencidos → APROBADO (tolerancia 1000)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('allowed = true', () => pm.expect(b.allowed).to.eql(true));",
+                  "pm.test('reason = null', () => pm.expect(b.reason).to.eql(null));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/check-ins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "check-ins"
+              ]
+            },
+            "description": "**Esperado:** 200 OK con `allowed: true`, `reason: null`. 500 ≤ 1000, se tolera.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Registrar deuda de 5000 vencida ayer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('debtId', pm.response.json().id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members/{{memberId}}/debts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members",
+                "{{memberId}}",
+                "debts"
+              ]
+            },
+            "description": "**Esperado:** 201. Total vencido: 5500 > 1000.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 5000,\n  \"dueDate\": \"{{yesterday}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Check-in con 5500 vencidos → RECHAZADO",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('allowed = false', () => pm.expect(b.allowed).to.eql(false));",
+                  "pm.test('reason = \"OverdueDebt\"', () => pm.expect(b.reason).to.eql(\"OverdueDebt\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/check-ins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "check-ins"
+              ]
+            },
+            "description": "**Esperado:** 200 OK con `allowed: false`, `reason: \"OverdueDebt\"`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Pagar la deuda de 5000",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('estado Paid', () => pm.expect(b.status).to.eql('Paid'));",
+                  "pm.test('tiene paidAt', () => pm.expect(b.paidAt).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/debts/{{debtId}}/pay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "debts",
+                "{{debtId}}",
+                "pay"
+              ]
+            },
+            "description": "**Esperado:** 200 con `status: \"Paid\"` y `paidAt`."
+          }
+        },
+        {
+          "name": "Check-in luego de pagar → APROBADO",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('allowed = true', () => pm.expect(b.allowed).to.eql(true));",
+                  "pm.test('reason = null', () => pm.expect(b.reason).to.eql(null));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/check-ins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "check-ins"
+              ]
+            },
+            "description": "**Esperado:** 200 OK con `allowed: true`, `reason: null`. Quedan 500 vencidos, dentro de la tolerancia.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Pagar otra vez la misma deuda → 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 409', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/debts/{{debtId}}/pay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "debts",
+                "{{debtId}}",
+                "pay"
+              ]
+            },
+            "description": "**Esperado:** 409 Conflict (ya estaba pagada)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5 · RECHAZADO · OutsideTimeSlot",
+      "description": "Regla 3: la franja arranca 3 horas después de la hora actual de Buenos Aires.",
+      "item": [
+        {
+          "name": "Crear socio",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// DNI aleatorio de 8 dígitos para que la colección se pueda correr muchas veces",
+                  "pm.collectionVariables.set('dni', String(20000000 + Math.floor(Math.random() * 70000000)));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('memberId', b.id);",
+                  "pm.test('devuelve el DNI del socio', () => pm.expect(b.dni).to.eql(pm.collectionVariables.get('dni')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members"
+              ]
+            },
+            "description": "**Esperado:** 201 Created con `{ id, name, dni }`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Socio de prueba\",\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Asignar membresía con franja que NO incluye la hora actual",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members/{{memberId}}/memberships",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members",
+                "{{memberId}}",
+                "memberships"
+              ]
+            },
+            "description": "**Esperado:** 201.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startDate\": \"{{ago30}}\",\n  \"endDate\": \"{{in30}}\",\n  \"slotStart\": \"{{slotOutsideStart}}\",\n  \"slotEnd\": \"{{slotOutsideEnd}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Check-in → RECHAZADO (fuera de franja)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('allowed = false', () => pm.expect(b.allowed).to.eql(false));",
+                  "pm.test('reason = \"OutsideTimeSlot\"', () => pm.expect(b.reason).to.eql(\"OutsideTimeSlot\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/check-ins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "check-ins"
+              ]
+            },
+            "description": "**Esperado:** 200 OK con `allowed: false`, `reason: \"OutsideTimeSlot\"`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "6 · RECHAZADO · NoCredits",
+      "description": "Regla 4. Para que el caso sea reproducible en el momento se asigna una membresía con 0 créditos (pack agotado). Agotarlos 'de verdad' requiere esperar la ventana de 2 h; ese flujo está cubierto en los tests automatizados.",
+      "item": [
+        {
+          "name": "Crear socio",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// DNI aleatorio de 8 dígitos para que la colección se pueda correr muchas veces",
+                  "pm.collectionVariables.set('dni', String(20000000 + Math.floor(Math.random() * 70000000)));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('memberId', b.id);",
+                  "pm.test('devuelve el DNI del socio', () => pm.expect(b.dni).to.eql(pm.collectionVariables.get('dni')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members"
+              ]
+            },
+            "description": "**Esperado:** 201 Created con `{ id, name, dni }`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Socio de prueba\",\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Asignar membresía con 0 créditos",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('creditsRemaining = 0', () => pm.expect(b.creditsRemaining).to.eql(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members/{{memberId}}/memberships",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members",
+                "{{memberId}}",
+                "memberships"
+              ]
+            },
+            "description": "**Esperado:** 201 con `credits: 0`, `creditsRemaining: 0`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startDate\": \"{{ago30}}\",\n  \"endDate\": \"{{in30}}\",\n  \"credits\": 0\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Check-in → RECHAZADO (sin créditos)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('allowed = false', () => pm.expect(b.allowed).to.eql(false));",
+                  "pm.test('reason = \"NoCredits\"', () => pm.expect(b.reason).to.eql(\"NoCredits\"));",
+                  "pm.test('creditConsumed = false', () => pm.expect(b.creditConsumed).to.eql(false));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/check-ins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "check-ins"
+              ]
+            },
+            "description": "**Esperado:** 200 OK con `allowed: false`, `reason: \"NoCredits\"`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "7 · Créditos: descuento y reingreso dentro de 2 horas (regla 5)",
+      "description": "Membresía de 2 créditos: el primer ingreso descuenta uno; el segundo, dentro de las 2 horas, no descuenta.",
+      "item": [
+        {
+          "name": "Crear socio",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// DNI aleatorio de 8 dígitos para que la colección se pueda correr muchas veces",
+                  "pm.collectionVariables.set('dni', String(20000000 + Math.floor(Math.random() * 70000000)));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('memberId', b.id);",
+                  "pm.test('devuelve el DNI del socio', () => pm.expect(b.dni).to.eql(pm.collectionVariables.get('dni')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members"
+              ]
+            },
+            "description": "**Esperado:** 201 Created con `{ id, name, dni }`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Socio de prueba\",\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Asignar membresía de 2 créditos",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('credits = 2', () => pm.expect(b.credits).to.eql(2));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members/{{memberId}}/memberships",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members",
+                "{{memberId}}",
+                "memberships"
+              ]
+            },
+            "description": "**Esperado:** 201 con `credits: 2`, `creditsRemaining: 2`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startDate\": \"{{ago30}}\",\n  \"endDate\": \"{{in30}}\",\n  \"credits\": 2\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "1er check-in → APROBADO, descuenta 1 crédito",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('allowed = true', () => pm.expect(b.allowed).to.eql(true));",
+                  "pm.test('reason = null', () => pm.expect(b.reason).to.eql(null));",
+                  "pm.test('creditConsumed = true', () => pm.expect(b.creditConsumed).to.eql(true));",
+                  "pm.test('creditsRemaining = 1', () => pm.expect(b.creditsRemaining).to.eql(1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/check-ins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "check-ins"
+              ]
+            },
+            "description": "**Esperado:** 200 OK con `allowed: true`, `reason: null`. `creditConsumed: true`, `creditsRemaining: 1`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "2º check-in (reingreso) → APROBADO, NO descuenta",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('allowed = true', () => pm.expect(b.allowed).to.eql(true));",
+                  "pm.test('reason = null', () => pm.expect(b.reason).to.eql(null));",
+                  "pm.test('creditConsumed = false', () => pm.expect(b.creditConsumed).to.eql(false));",
+                  "pm.test('creditsRemaining = 1', () => pm.expect(b.creditsRemaining).to.eql(1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/check-ins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "check-ins"
+              ]
+            },
+            "description": "**Esperado:** 200 OK con `allowed: true`, `reason: null`. `creditConsumed: false`, `creditsRemaining: 1`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Historial de ingresos del socio",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('2 ingresos registrados', () => pm.expect(b.length).to.eql(2));",
+                  "pm.test('el más reciente es el reingreso (sin crédito)', () => pm.expect(b[0].creditConsumed).to.eql(false));",
+                  "pm.test('el más antiguo descontó crédito', () => pm.expect(b[1].creditConsumed).to.eql(true));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/members/{{memberId}}/check-ins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members",
+                "{{memberId}}",
+                "check-ins"
+              ]
+            },
+            "description": "**Esperado:** 200 con 2 elementos, del más reciente al más antiguo."
+          }
+        }
+      ]
+    },
+    {
+      "name": "8 · Reingreso con el último crédito",
+      "description": "La regla 5 exime del chequeo de créditos: con saldo 0 recién consumido, se puede volver a pasar dentro de 2 h.",
+      "item": [
+        {
+          "name": "Crear socio",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// DNI aleatorio de 8 dígitos para que la colección se pueda correr muchas veces",
+                  "pm.collectionVariables.set('dni', String(20000000 + Math.floor(Math.random() * 70000000)));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('memberId', b.id);",
+                  "pm.test('devuelve el DNI del socio', () => pm.expect(b.dni).to.eql(pm.collectionVariables.get('dni')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members"
+              ]
+            },
+            "description": "**Esperado:** 201 Created con `{ id, name, dni }`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Socio de prueba\",\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Asignar membresía de 1 crédito",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members/{{memberId}}/memberships",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members",
+                "{{memberId}}",
+                "memberships"
+              ]
+            },
+            "description": "**Esperado:** 201.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startDate\": \"{{ago30}}\",\n  \"endDate\": \"{{in30}}\",\n  \"credits\": 1\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "1er check-in → APROBADO, saldo 0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('allowed = true', () => pm.expect(b.allowed).to.eql(true));",
+                  "pm.test('reason = null', () => pm.expect(b.reason).to.eql(null));",
+                  "pm.test('creditConsumed = true', () => pm.expect(b.creditConsumed).to.eql(true));",
+                  "pm.test('creditsRemaining = 0', () => pm.expect(b.creditsRemaining).to.eql(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/check-ins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "check-ins"
+              ]
+            },
+            "description": "**Esperado:** 200 OK con `allowed: true`, `reason: null`. `creditConsumed: true`, `creditsRemaining: 0`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "2º check-in (reingreso) → APROBADO aunque el saldo sea 0",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('allowed = true', () => pm.expect(b.allowed).to.eql(true));",
+                  "pm.test('reason = null', () => pm.expect(b.reason).to.eql(null));",
+                  "pm.test('creditConsumed = false', () => pm.expect(b.creditConsumed).to.eql(false));",
+                  "pm.test('creditsRemaining = 0', () => pm.expect(b.creditsRemaining).to.eql(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/check-ins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "check-ins"
+              ]
+            },
+            "description": "**Esperado:** 200 OK con `allowed: true`, `reason: null`. `creditConsumed: false`, `creditsRemaining: 0`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "9 · Errores y validaciones",
+      "description": "Respuestas de error de la API.",
+      "item": [
+        {
+          "name": "Check-in con DNI inexistente → 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/check-ins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "check-ins"
+              ]
+            },
+            "description": "**Esperado:** 404 (ProblemDetails). No existe un socio con ese DNI.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"dni\": \"00000001\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Crear socio (para probar duplicado)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// DNI aleatorio de 8 dígitos para que la colección se pueda correr muchas veces",
+                  "pm.collectionVariables.set('dni', String(20000000 + Math.floor(Math.random() * 70000000)));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('memberId', b.id);",
+                  "pm.test('devuelve el DNI del socio', () => pm.expect(b.dni).to.eql(pm.collectionVariables.get('dni')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members"
+              ]
+            },
+            "description": "**Esperado:** 201 Created con `{ id, name, dni }`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Socio de prueba\",\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Crear socio con DNI repetido → 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 409', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members"
+              ]
+            },
+            "description": "**Esperado:** 409 Conflict.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Otro\",\n  \"dni\": \"{{dni}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Membresía con vencimiento anterior al inicio → 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members/{{memberId}}/memberships",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members",
+                "{{memberId}}",
+                "memberships"
+              ]
+            },
+            "description": "**Esperado:** 400 con error de validación en `endDate`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startDate\": \"{{in30}}\",\n  \"endDate\": \"{{ago30}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Membresía con franja incompleta → 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members/{{memberId}}/memberships",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members",
+                "{{memberId}}",
+                "memberships"
+              ]
+            },
+            "description": "**Esperado:** 400: la franja requiere inicio y fin.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"startDate\": \"{{ago30}}\",\n  \"endDate\": \"{{in30}}\",\n  \"slotStart\": \"08:00\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Deuda con monto negativo → 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/members/{{memberId}}/debts",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members",
+                "{{memberId}}",
+                "debts"
+              ]
+            },
+            "description": "**Esperado:** 400.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": -10,\n  \"dueDate\": \"{{yesterday}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Pagar una deuda inexistente → 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/debts/999999/pay",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "debts",
+                "999999",
+                "pay"
+              ]
+            },
+            "description": "**Esperado:** 404."
+          }
+        },
+        {
+          "name": "Historial de un socio inexistente → 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 404', () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/members/999999/check-ins",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "members",
+                "999999",
+                "check-ins"
+              ]
+            },
+            "description": "**Esperado:** 404."
+          }
+        }
+      ]
+    }
+  ]
+}
