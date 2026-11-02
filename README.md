@@ -81,7 +81,7 @@ curl -s -X POST http://localhost:5080/members \
   -d '{"name": "Ana Pérez", "dni": "30.111.222"}'
 # → 201 {"id":1,"name":"Ana Pérez","dni":"30111222"}
 
-# 2. Asignarle una membresía de 10 créditos, de lunes a viernes de 7:00 a 22:00 (franja opcional)
+# 2. Asignarle una membresía de 10 créditos, con franja horaria de 7:00 a 22:00 (créditos y franja son opcionales)
 curl -s -X POST http://localhost:5080/members/1/memberships \
   -H "Content-Type: application/json" \
   -d '{"startDate": "2026-11-01", "endDate": "2026-12-31", "credits": 10, "slotStart": "07:00", "slotEnd": "22:00"}'
