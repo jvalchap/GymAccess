@@ -29,7 +29,7 @@ public record DebtResponse(int Id, int MemberId, decimal Amount, DateOnly DueDat
         d.Amount,
         d.DueDate,
         d.Status,
-        d.PaidAtUtc.HasValue ? DateTime.SpecifyKind(d.PaidAtUtc.Value, DateTimeKind.Utc) : null);
+        d.PaidAtUtc.HasValue ? (DateTime?)DateTime.SpecifyKind(d.PaidAtUtc.Value, DateTimeKind.Utc) : null);
 }
 
 public record CheckInResponse(
