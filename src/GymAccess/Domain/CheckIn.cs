@@ -4,7 +4,12 @@ namespace GymAccess.Domain;
 public class CheckIn
 {
     public int Id { get; set; }
-    public int MemberId { get; set; }
+
+    /// <summary>Socio al que pertenece el intento. Null si el DNI presentado no corresponde a ningún socio.</summary>
+    public int? MemberId { get; set; }
+
+    /// <summary>DNI tal como se presentó (normalizado). Se guarda siempre, para auditar también los intentos de DNI desconocidos.</summary>
+    public string PresentedDni { get; set; } = string.Empty;
 
     /// <summary>Membresía con la que se aprobó el ingreso. Null si fue rechazado.</summary>
     public int? MembershipId { get; set; }

@@ -62,12 +62,19 @@ public sealed class CheckInServiceTests : IDisposable
         (await _db.Memberships.AsNoTracking().SingleAsync()).CreditsRemaining;
 
     [Fact]
-    public async Task Returns_null_when_the_dni_does_not_belong_to_a_member()
+    public async Task Unknown_dni_is_denied_and_the_attempt_is_recorded()
     {
         var result = await NewService().RegisterAsync("99999999");
 
-        Assert.Null(result);
-        Assert.Empty(await _db.CheckIns.ToListAsync());
+        Assert.Equal(CheckInResult.Denied, result.Result);
+        Assert.Equal(DenialReason.MemberNotFound, result.DenialReason);
+        Assert.Null(result.MemberId);
+        Assert.False(result.CreditConsumed);
+
+        var stored = await _db.CheckIns.AsNoTracking().SingleAsync();
+        Assert.Equal("99999999", stored.PresentedDni);
+        Assert.Null(stored.MemberId);
+        Assert.Equal(DenialReason.MemberNotFound, stored.DenialReason);
     }
 
     [Fact]

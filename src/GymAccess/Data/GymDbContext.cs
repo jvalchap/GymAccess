@@ -32,6 +32,7 @@ public class GymDbContext : DbContext
 
         modelBuilder.Entity<CheckIn>(e =>
         {
+            e.Property(c => c.PresentedDni).IsRequired().HasMaxLength(20);
             e.Property(c => c.Result).HasConversion<string>().HasMaxLength(20);
             e.Property(c => c.DenialReason).HasConversion<string>().HasMaxLength(40);
             e.HasOne<Member>().WithMany().HasForeignKey(c => c.MemberId);

@@ -41,6 +41,6 @@ public class CreateDebtRequest
 
 public class CheckInRequest
 {
-    [Required]
+    [Required, StringLength(20)]
     public string Dni { get; set; } = string.Empty;
 }

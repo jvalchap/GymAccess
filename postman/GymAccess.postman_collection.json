@@ -1632,18 +1632,22 @@
       ]
     },
     {
-      "name": "9 · Errores y validaciones",
-      "description": "Respuestas de error de la API.",
+      "name": "9 · RECHAZADO · MemberNotFound",
+      "description": "DNI que no corresponde a ningún socio. Responde 200 como cualquier otro rechazo y el intento queda registrado.",
       "item": [
         {
-          "name": "Check-in con DNI inexistente → 404",
+          "name": "Check-in con DNI inexistente → RECHAZADO",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('Status 404', () => pm.response.to.have.status(404));"
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('allowed = false', () => pm.expect(b.allowed).to.eql(false));",
+                  "pm.test('reason = \"MemberNotFound\"', () => pm.expect(b.reason).to.eql(\"MemberNotFound\"));",
+                  "pm.test('no pertenece a ningún socio', () => pm.expect(b.memberId).to.eql(null));"
                 ]
               }
             }
@@ -1665,7 +1669,7 @@
                 "check-ins"
               ]
             },
-            "description": "**Esperado:** 404 (ProblemDetails). No existe un socio con ese DNI.",
+            "description": "**Esperado:** 200 OK con `allowed: false`, `reason: \"MemberNotFound\"`. `memberId: null`.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"dni\": \"00000001\"\n}",
@@ -1676,7 +1680,13 @@
               }
             }
           }
-        },
+        }
+      ]
+    },
+    {
+      "name": "10 · Errores y validaciones",
+      "description": "Respuestas de error de la API.",
+      "item": [
         {
           "name": "Crear socio (para probar duplicado)",
           "event": [

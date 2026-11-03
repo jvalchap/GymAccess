@@ -22,9 +22,9 @@
 
 **Respuestas**
 - Si fallan varias reglas se informa **una sola**, la primera según el orden del enunciado (1→4).
-- Un rechazo es **200** con `allowed: false` y `reason`. El endpoint funcionó; rechazar es el resultado de negocio. Reservo 4xx para errores del pedido (400 validación, 404 socio inexistente, 409 conflicto).
-- **DNI inexistente** → 404 y no se registra el intento (el ingreso pertenece a un socio y no hay a quién asociarlo; ver mejoras).
-- Cada intento de un socio existente se registra, aprobado o rechazado, con su motivo.
+- Un rechazo es **200** con `allowed: false` y `reason`. El endpoint funcionó; rechazar es el resultado de negocio. Reservo 4xx para errores del pedido (400 validación, 409 conflicto) y para recursos de los endpoints administrativos que no existen (404).
+- **DNI inexistente** → 200 con `allowed: false` y `reason: MemberNotFound`. El enunciado dice que el ingreso registra "cada intento", así que el intento se guarda igual, con `MemberId` nulo y el DNI presentado (`PresentedDni`). Así el molinete recibe siempre el mismo formato de respuesta y queda auditoría de DNIs desconocidos.
+- Cada intento se registra, aprobado o rechazado, con su motivo.
 - El DNI se normaliza (se quitan puntos, espacios y guiones) y debe tener entre 6 y 9 dígitos.
 - Pagar una deuda ya pagada → 409 (más útil para detectar errores del cliente que un 200 silencioso).
 
@@ -55,7 +55,6 @@ No hay que tocar `CheckInEvaluator`, los controllers ni el resto de las reglas.
 
 - **Migraciones de EF Core** en lugar de `EnsureCreated` (hoy un cambio de esquema obliga a borrar `gymaccess.db`).
 - **Concurrencia real**: descontar el crédito con un `UPDATE ... WHERE CreditsRemaining > 0` atómico (o un token de concurrencia) en lugar del semáforo en memoria, para que funcione con varias instancias o con otra base.
-- **Registrar intentos con DNI desconocido** (guardando el DNI presentado): sirve para auditoría y para detectar intentos raros.
 - **Idempotencia en `POST /check-ins`**: si el molinete reintenta por un timeout, hoy podría registrar dos ingresos.
 - **Autenticación** (al menos una API key para el molinete) y autorización para los endpoints administrativos.
 - **Tests de integración HTTP** con `WebApplicationFactory`, para cubrir serialización, validación y códigos de estado (hoy eso lo cubre la colección de Postman).

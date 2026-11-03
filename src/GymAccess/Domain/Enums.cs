@@ -25,5 +25,8 @@ public enum DenialReason
     OutsideTimeSlot,
 
     /// <summary>Regla 4: la membresía usa créditos y no quedan.</summary>
-    NoCredits
+    NoCredits,
+
+    /// <summary>El DNI presentado no corresponde a ningún socio.</summary>
+    MemberNotFound
 }

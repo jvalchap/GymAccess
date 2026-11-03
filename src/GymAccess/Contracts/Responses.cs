@@ -34,7 +34,7 @@ public record DebtResponse(int Id, int MemberId, decimal Amount, DateOnly DueDat
 
 public record CheckInResponse(
     int Id,
-    int MemberId,
+    int? MemberId,
     bool Allowed,
     DenialReason? Reason,
     string Message,
@@ -73,6 +73,7 @@ public static class CheckInMessages
             DenialReason.OverdueDebt => "El socio tiene deudas vencidas por encima del monto de tolerancia.",
             DenialReason.OutsideTimeSlot => "El ingreso está fuera de la franja horaria de la membresía.",
             DenialReason.NoCredits => "La membresía no tiene créditos disponibles.",
+            DenialReason.MemberNotFound => "No existe un socio con ese DNI.",
             _ => "Ingreso rechazado."
         };
     }

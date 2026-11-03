@@ -56,7 +56,7 @@ Cualquier valor se puede pisar por variable de entorno, por ejemplo `Gym__DebtTo
 | POST | `/members/{id}/memberships` | Asigna una membresía | 201 · 400 · 404 |
 | POST | `/members/{id}/debts` | Registra una deuda | 201 · 400 · 404 |
 | POST | `/debts/{id}/pay` | Marca una deuda como pagada | 200 · 404 · 409 (ya pagada) |
-| POST | `/check-ins` | Recibe un DNI y decide el ingreso | 200 (aprobado **o** rechazado) · 404 (DNI desconocido) |
+| POST | `/check-ins` | Recibe un DNI y decide el ingreso | 200 (aprobado **o** rechazado) · 400 |
 | GET | `/members/{id}/check-ins` | Historial de ingresos, del más reciente al más antiguo | 200 · 404 |
 
 ### Respuesta de `POST /check-ins`
@@ -69,6 +69,7 @@ Un rechazo es una decisión válida, por lo que responde **200** con `allowed: f
 | `OverdueDebt` | 2. Las deudas pendientes vencidas superan la tolerancia |
 | `OutsideTimeSlot` | 3. Fuera de la franja horaria de la membresía |
 | `NoCredits` | 4. La membresía usa créditos y no quedan |
+| `MemberNotFound` | El DNI no corresponde a ningún socio (el intento igual se registra) |
 
 Si fallan varias reglas, se informa la primera en ese orden.
 
@@ -138,7 +139,8 @@ No necesita datos cargados de antemano: cada carpeta crea su propio socio con un
 | 6 | **Rechazado** `NoCredits` |
 | 7 | Créditos: el primer ingreso descuenta; el reingreso dentro de 2 h no. Historial. |
 | 8 | Reingreso con el último crédito |
-| 9 | Errores: DNI inexistente, DNI duplicado, validaciones, 404 |
+| 9 | **Rechazado** `MemberNotFound` (DNI inexistente) |
+| 10 | Errores: DNI duplicado, validaciones, 404 |
 
 > Nota sobre la carpeta 6: agotar créditos "de verdad" exige esperar 2 horas (por la regla de reingreso), así que para poder mostrarlo en el momento se asigna una membresía con `credits: 0`. El flujo real (consumir el último crédito → reingresar → pasadas las 2 h, rechazo) está en `CheckInServiceTests.Last_credit_can_be_reentered_and_then_is_exhausted_after_the_window`.
 

@@ -30,19 +30,34 @@ public sealed class CheckInService
         _options = options.Value;
     }
 
-    /// <summary>Registra el intento de ingreso. Devuelve null si no existe un socio con ese DNI.</summary>
-    public async Task<CheckIn?> RegisterAsync(string dni, CancellationToken ct = default)
+    /// <summary>
+    /// Registra el intento de ingreso y devuelve el resultado. Siempre registra: si el DNI no corresponde
+    /// a ningún socio, el intento queda rechazado con <see cref="DenialReason.MemberNotFound"/>.
+    /// </summary>
+    public async Task<CheckIn> RegisterAsync(string dni, CancellationToken ct = default)
     {
         await Gate.WaitAsync(ct);
         try
         {
             var member = await _db.Members.FirstOrDefaultAsync(m => m.Dni == dni, ct);
+            var now = _clock.UtcNow;
+
             if (member is null)
             {
-                return null;
+                var unknown = new CheckIn
+                {
+                    MemberId = null,
+                    PresentedDni = dni,
+                    OccurredAtUtc = now,
+                    Result = CheckInResult.Denied,
+                    DenialReason = DenialReason.MemberNotFound
+                };
+
+                _db.CheckIns.Add(unknown);
+                await _db.SaveChangesAsync(ct);
+                return unknown;
             }
 
-            var now = _clock.UtcNow;
             var windowStart = now.AddHours(-_options.ReentryWindowHours);
 
             // Memberships queda "tracked": si hay que descontar un crédito, el SaveChanges de abajo lo persiste.
@@ -64,6 +79,7 @@ public sealed class CheckInService
             var checkIn = new CheckIn
             {
                 MemberId = member.Id,
+                PresentedDni = dni,
                 MembershipId = decision.Membership?.Id,
                 OccurredAtUtc = now,
                 Result = decision.Allowed ? CheckInResult.Approved : CheckInResult.Denied,
