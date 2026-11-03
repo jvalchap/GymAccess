@@ -35,7 +35,7 @@
 - **El orden de las reglas es explícito** (`CheckInRules.CreateDefault`) y define la prioridad del motivo de rechazo.
 - **Reloj inyectable (`IClock`)** para testear ventanas de tiempo sin dormir ni depender de la hora real.
 - **Controllers finos que usan el `DbContext` directamente** para los endpoints CRUD (crear socio, membresía, deuda). No metí repositorios ni capa de aplicación: serían pasamanos sin lógica. Si esos endpoints ganan reglas de negocio, el siguiente paso es sacarlas a servicios, como ya hice con el ingreso.
-- **Concurrencia**: un `SemaphoreSlim` serializa los ingresos dentro del proceso, para que dos pasadas simultáneas del mismo socio no descuenten dos veces. Alcanza para una instancia con SQLite; ver mejoras.
+- **Concurrencia: optimista, no un lock.** El saldo de créditos es un *token de concurrencia* de EF Core: el `UPDATE` solo se aplica si el saldo sigue siendo el que leímos. Si dos ingresos del mismo socio se pisan, el segundo `SaveChanges` falla con `DbUpdateConcurrencyException`, se descartan sus cambios y se **vuelve a decidir** con datos frescos (hasta 3 intentos). Al reintentar ya aparece el ingreso del primero, así que el segundo se resuelve como reingreso: se descuenta un solo crédito, que es lo que corresponde. Lo elegí sobre un `SemaphoreSlim` porque el lock solo protege dentro de un proceso, y sobre un `UPDATE ... WHERE CreditsRemaining > 0` porque ese evita saldos negativos pero **no** evita descontar dos créditos por una carrera de reingreso. Tiene tests que reproducen la carrera de verdad (`CheckInServiceTests`).
 - **`EnsureCreated()` en lugar de migraciones**, para cumplir con "`dotnet run` sin configuración adicional". Ver mejoras.
 - **Tests**: unitarios de reglas (la mayoría), más tests del servicio contra SQLite en memoria para lo que sí depende de la base: descuento persistido, reingreso, registro de rechazos.
 
@@ -54,7 +54,6 @@ No hay que tocar `CheckInEvaluator`, los controllers ni el resto de las reglas.
 ## 4. Qué mejoraría con más tiempo
 
 - **Migraciones de EF Core** en lugar de `EnsureCreated` (hoy un cambio de esquema obliga a borrar `gymaccess.db`).
-- **Concurrencia real**: descontar el crédito con un `UPDATE ... WHERE CreditsRemaining > 0` atómico (o un token de concurrencia) en lugar del semáforo en memoria, para que funcione con varias instancias o con otra base.
 - **Idempotencia en `POST /check-ins`**: si el molinete reintenta por un timeout, hoy podría registrar dos ingresos.
 - **Autenticación** (al menos una API key para el molinete) y autorización para los endpoints administrativos.
 - **Tests de integración HTTP** con `WebApplicationFactory`, para cubrir serialización, validación y códigos de estado (hoy eso lo cubre la colección de Postman).

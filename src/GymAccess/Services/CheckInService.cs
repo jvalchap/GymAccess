@@ -10,12 +10,15 @@ namespace GymAccess.Services;
 /// <summary>
 /// Orquesta un ingreso: carga los datos del socio, le pide la decisión al <see cref="CheckInEvaluator"/>,
 /// descuenta el crédito si corresponde y registra el intento (todo en un único SaveChanges, o sea atómico).
+///
+/// Concurrencia: el saldo de créditos es un token de concurrencia (ver GymDbContext). Si dos ingresos del mismo socio
+/// se pisan, el segundo SaveChanges falla con <see cref="DbUpdateConcurrencyException"/>, se descartan sus cambios y se
+/// vuelve a decidir con los datos nuevos (donde ya aparece el ingreso del primero, o sea que será un reingreso).
+/// Funciona igual con una o con varias instancias de la API.
 /// </summary>
 public sealed class CheckInService
 {
-    // Serializa los ingresos dentro del proceso para que dos pasadas simultáneas del mismo socio
-    // no descuenten dos veces ni se salteen el reingreso. Suficiente para una instancia con SQLite.
-    private static readonly SemaphoreSlim Gate = new(1, 1);
+    private const int MaxAttempts = 3;
 
     private readonly GymDbContext _db;
     private readonly CheckInEvaluator _evaluator;
@@ -36,66 +39,75 @@ public sealed class CheckInService
     /// </summary>
     public async Task<CheckIn> RegisterAsync(string dni, CancellationToken ct = default)
     {
-        await Gate.WaitAsync(ct);
-        try
+        for (var attempt = 1; ; attempt++)
         {
-            var member = await _db.Members.FirstOrDefaultAsync(m => m.Dni == dni, ct);
-            var now = _clock.UtcNow;
-
-            if (member is null)
+            try
             {
-                var unknown = new CheckIn
-                {
-                    MemberId = null,
-                    PresentedDni = dni,
-                    OccurredAtUtc = now,
-                    Result = CheckInResult.Denied,
-                    DenialReason = DenialReason.MemberNotFound
-                };
-
-                _db.CheckIns.Add(unknown);
-                await _db.SaveChangesAsync(ct);
-                return unknown;
+                return await TryRegisterAsync(dni, ct);
             }
-
-            var windowStart = now.AddHours(-_options.ReentryWindowHours);
-
-            // Memberships queda "tracked": si hay que descontar un crédito, el SaveChanges de abajo lo persiste.
-            var memberships = await _db.Memberships.Where(m => m.MemberId == member.Id).ToListAsync(ct);
-            var debts = await _db.Debts.AsNoTracking()
-                .Where(d => d.MemberId == member.Id && d.Status == DebtStatus.Pending)
-                .ToListAsync(ct);
-            var recentCheckIns = await _db.CheckIns.AsNoTracking()
-                .Where(c => c.MemberId == member.Id && c.OccurredAtUtc >= windowStart)
-                .ToListAsync(ct);
-
-            var decision = _evaluator.Evaluate(new CheckInInput(memberships, debts, recentCheckIns, now));
-
-            if (decision.CreditConsumed)
+            catch (DbUpdateConcurrencyException) when (attempt < MaxAttempts)
             {
-                decision.Membership!.CreditsRemaining -= 1;
+                // Otro ingreso modificó los créditos de esta membresía entre que los leímos y los guardamos.
+                // Descartamos lo que quedó pendiente en el contexto y decidimos de nuevo con datos frescos.
+                _db.ChangeTracker.Clear();
             }
+        }
+    }
 
-            var checkIn = new CheckIn
+    private async Task<CheckIn> TryRegisterAsync(string dni, CancellationToken ct)
+    {
+        var member = await _db.Members.FirstOrDefaultAsync(m => m.Dni == dni, ct);
+        var now = _clock.UtcNow;
+
+        if (member is null)
+        {
+            var unknown = new CheckIn
             {
-                MemberId = member.Id,
+                MemberId = null,
                 PresentedDni = dni,
-                MembershipId = decision.Membership?.Id,
                 OccurredAtUtc = now,
-                Result = decision.Allowed ? CheckInResult.Approved : CheckInResult.Denied,
-                DenialReason = decision.Reason,
-                CreditConsumed = decision.CreditConsumed,
-                CreditsRemainingAfter = decision.Membership?.CreditsRemaining
+                Result = CheckInResult.Denied,
+                DenialReason = DenialReason.MemberNotFound
             };
 
-            _db.CheckIns.Add(checkIn);
+            _db.CheckIns.Add(unknown);
             await _db.SaveChangesAsync(ct);
+            return unknown;
+        }
 
-            return checkIn;
-        }
-        finally
+        var windowStart = now.AddHours(-_options.ReentryWindowHours);
+
+        // Memberships queda "tracked": si hay que descontar un crédito, el SaveChanges de abajo lo persiste.
+        var memberships = await _db.Memberships.Where(m => m.MemberId == member.Id).ToListAsync(ct);
+        var debts = await _db.Debts.AsNoTracking()
+            .Where(d => d.MemberId == member.Id && d.Status == DebtStatus.Pending)
+            .ToListAsync(ct);
+        var recentCheckIns = await _db.CheckIns.AsNoTracking()
+            .Where(c => c.MemberId == member.Id && c.OccurredAtUtc >= windowStart)
+            .ToListAsync(ct);
+
+        var decision = _evaluator.Evaluate(new CheckInInput(memberships, debts, recentCheckIns, now));
+
+        if (decision.CreditConsumed)
         {
-            Gate.Release();
+            decision.Membership!.CreditsRemaining -= 1;
         }
+
+        var checkIn = new CheckIn
+        {
+            MemberId = member.Id,
+            PresentedDni = dni,
+            MembershipId = decision.Membership?.Id,
+            OccurredAtUtc = now,
+            Result = decision.Allowed ? CheckInResult.Approved : CheckInResult.Denied,
+            DenialReason = decision.Reason,
+            CreditConsumed = decision.CreditConsumed,
+            CreditsRemainingAfter = decision.Membership?.CreditsRemaining
+        };
+
+        _db.CheckIns.Add(checkIn);
+        await _db.SaveChangesAsync(ct);
+
+        return checkIn;
     }
 }

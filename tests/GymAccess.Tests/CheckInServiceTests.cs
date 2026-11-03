@@ -4,6 +4,7 @@ using GymAccess.Rules;
 using GymAccess.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Options;
 
 namespace GymAccess.Tests;
@@ -34,11 +35,23 @@ public sealed class CheckInServiceTests : IDisposable
         _connection.Dispose();
     }
 
-    private CheckInService NewService()
+    private CheckInService NewService() => NewServiceFor(_db);
+
+    private CheckInService NewServiceFor(GymDbContext db)
     {
         var gymOptions = Options.Create(TestData.DefaultOptions());
         var evaluator = new CheckInEvaluator(CheckInRules.CreateDefault(), gymOptions);
-        return new CheckInService(_db, evaluator, _clock, gymOptions);
+        return new CheckInService(db, evaluator, _clock, gymOptions);
+    }
+
+    /// <summary>Otro DbContext sobre la MISMA base en memoria: simula a otro request / otra instancia de la API.</summary>
+    private GymDbContext NewContext(params IInterceptor[] interceptors)
+    {
+        var options = new DbContextOptionsBuilder<GymDbContext>()
+            .UseSqlite(_connection)
+            .AddInterceptors(interceptors)
+            .Options;
+        return new GymDbContext(options);
     }
 
     private async Task<Membership> SeedMemberWithMembershipAsync(int? credits)
@@ -187,6 +200,75 @@ public sealed class CheckInServiceTests : IDisposable
 
         Assert.Equal(CheckInResult.Denied, before!.Result);
         Assert.Equal(CheckInResult.Approved, after!.Result);
+    }
+
+    [Fact]
+    public async Task Concurrent_check_ins_of_the_same_member_consume_only_one_credit()
+    {
+        // Dos ingresos del mismo socio se pisan. Sin protección, los dos verían "primer ingreso" y descontarían
+        // 2 créditos. Con el token de concurrencia, el segundo en guardar falla, reintenta, y ve el reingreso.
+        await SeedMemberWithMembershipAsync(credits: 2);
+
+        await using var otherRequestDb = NewContext();
+        var otherRequest = NewServiceFor(otherRequestDb);
+
+        // Justo antes de que el primer request guarde, "se cuela" el otro request y completa su ingreso.
+        var interceptor = new RunOnceBeforeSaveInterceptor(() => otherRequest.RegisterAsync(Dni));
+        await using var racingDb = NewContext(interceptor);
+        var racing = NewServiceFor(racingDb);
+
+        var result = await racing.RegisterAsync(Dni);
+
+        Assert.Equal(CheckInResult.Approved, result.Result);
+        Assert.False(result.CreditConsumed);           // fue un reingreso: el otro ya había descontado
+        Assert.Equal(1, result.CreditsRemainingAfter);
+        Assert.Equal(1, await StoredCreditsAsync());   // 2 créditos - 1, no - 2
+        Assert.Equal(2, await _db.CheckIns.AsNoTracking().CountAsync());
+    }
+
+    [Fact]
+    public async Task Credits_never_go_below_zero_when_the_balance_changed_under_our_feet()
+    {
+        await SeedMemberWithMembershipAsync(credits: 1);
+
+        // Mientras el request lee "1 crédito", el saldo se agota por otro lado (ej. un ajuste manual o otra sede).
+        await using var otherDb = NewContext();
+        var interceptor = new RunOnceBeforeSaveInterceptor(async () =>
+        {
+            var membership = await otherDb.Memberships.SingleAsync();
+            membership.CreditsRemaining = 0;
+            await otherDb.SaveChangesAsync();
+        });
+        await using var racingDb = NewContext(interceptor);
+
+        var result = await NewServiceFor(racingDb).RegisterAsync(Dni);
+
+        Assert.Equal(CheckInResult.Denied, result.Result);
+        Assert.Equal(DenialReason.NoCredits, result.DenialReason);
+        Assert.Equal(0, await StoredCreditsAsync());
+    }
+
+    /// <summary>Ejecuta una acción una sola vez, justo antes del primer SaveChanges del contexto donde se registra.</summary>
+    private sealed class RunOnceBeforeSaveInterceptor : SaveChangesInterceptor
+    {
+        private readonly Func<Task> _action;
+        private bool _fired;
+
+        public RunOnceBeforeSaveInterceptor(Func<Task> action) => _action = action;
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData,
+            InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (!_fired)
+            {
+                _fired = true;
+                await _action();
+            }
+
+            return result;
+        }
     }
 
     private sealed class FakeClock : IClock

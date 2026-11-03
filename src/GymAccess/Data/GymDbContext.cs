@@ -25,6 +25,12 @@ public class GymDbContext : DbContext
             e.HasMany(m => m.Debts).WithOne().HasForeignKey(x => x.MemberId);
         });
 
+        modelBuilder.Entity<Membership>(e =>
+        {
+            // Concurrencia optimista: el UPDATE del saldo solo se aplica si nadie lo cambió desde que lo leímos.
+            e.Property(m => m.CreditsRemaining).IsConcurrencyToken();
+        });
+
         modelBuilder.Entity<Debt>(e =>
         {
             e.Property(d => d.Status).HasConversion<string>().HasMaxLength(20);
