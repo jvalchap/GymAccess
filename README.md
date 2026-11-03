@@ -47,6 +47,18 @@ Son tests de las reglas de ingreso (puros, sin base de datos) y de la orquestaci
 
 Cualquier valor se puede pisar por variable de entorno, por ejemplo `Gym__DebtTolerance=0 dotnet run --project src/GymAccess`.
 
+
+## Base de datos y migraciones
+
+El esquema se versiona con migraciones de EF Core (`src/GymAccess/Migrations`) y se aplican solas al arrancar la API. Si cambiás el modelo (entidades o `GymDbContext`), generá una migración nueva:
+
+```bash
+dotnet tool install --global dotnet-ef --version 8.0.*   # una sola vez
+dotnet ef migrations add NombreDelCambio --project src/GymAccess
+```
+
+Para empezar de cero, borrá `src/GymAccess/gymaccess.db`.
+
 ## Endpoints
 
 | Método | Ruta | Descripción | Respuestas |

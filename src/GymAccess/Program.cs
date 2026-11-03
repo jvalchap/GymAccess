@@ -32,10 +32,10 @@ builder.Services.AddScoped<CheckInService>();
 
 var app = builder.Build();
 
-// Sin migraciones: crea el archivo SQLite y las tablas si no existen, así corre con `dotnet run` sin pasos extra.
+// Aplica las migraciones pendientes (y crea el archivo SQLite si no existe), así corre con `dotnet run` sin pasos extra.
 using (var scope = app.Services.CreateScope())
 {
-    scope.ServiceProvider.GetRequiredService<GymDbContext>().Database.EnsureCreated();
+    scope.ServiceProvider.GetRequiredService<GymDbContext>().Database.Migrate();
 }
 
 // Falla rápido al arrancar si la zona horaria configurada no existe, en vez de en el primer ingreso.
