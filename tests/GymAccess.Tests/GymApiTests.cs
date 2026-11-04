@@ -4,22 +4,34 @@ using System.Text.Json;
 
 namespace GymAccess.Tests;
 
+/// <summary>
+/// Tests de punta a punta por HTTP: validan rutas, códigos de estado y el JSON tal como lo ve un cliente
+/// (por ejemplo, que "reason" viaje como texto y no como número).
+/// El reloj es fijo (12:00 hora de Buenos Aires), así que los reingresos caen siempre dentro de la ventana.
+/// </summary>
 public class GymApiTests : IClassFixture<GymApiFactory>
 {
     private static int _dniSeed = 30_000_000;
 
     private readonly HttpClient _client;
 
+    public GymApiTests(GymApiFactory factory)
+    {
+        _client = factory.CreateClient();
+    }
+
+    // ---------- Socios ----------
+
     [Fact]
     public async Task Create_member_returns_201_with_location_and_normalized_dni()
     {
-        var response = await _client.PostAsJsonAsync("/members", new { name = "  Ana PŠrez ", dni = "40.111.222" });
+        var response = await _client.PostAsJsonAsync("/members", new { name = "  Ana Pérez ", dni = "40.111.222" });
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         Assert.NotNull(response.Headers.Location);
 
         var body = await ReadAsync(response);
-        Assert.Equal("Ana PŠrez", body.GetProperty("name").GetString());
+        Assert.Equal("Ana Pérez", body.GetProperty("name").GetString());
         Assert.Equal("40111222", body.GetProperty("dni").GetString());
     }
 
@@ -31,6 +43,17 @@ public class GymApiTests : IClassFixture<GymApiFactory>
         var response = await _client.PostAsJsonAsync("/members", new { name = "Otra persona", dni });
 
         Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Create_member_with_invalid_dni_returns_400()
+    {
+        var response = await _client.PostAsJsonAsync("/members", new { name = "Ana", dni = "abc" });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+    }
+
+    // ---------- Ingresos: aprobado y un caso por motivo de rechazo ----------
 
     [Fact]
     public async Task Check_in_is_approved_for_an_active_unlimited_membership()
@@ -70,7 +93,6 @@ public class GymApiTests : IClassFixture<GymApiFactory>
         Assert.True((await CheckInAsync(dni)).GetProperty("allowed").GetBoolean());
     }
 
-
     [Fact]
     public async Task Overdue_debt_within_the_tolerance_does_not_block_the_check_in()
     {
@@ -96,6 +118,25 @@ public class GymApiTests : IClassFixture<GymApiFactory>
     }
 
     [Fact]
+    public async Task Check_in_is_denied_with_NoCredits_when_the_membership_has_no_credits()
+    {
+        var (id, dni) = await CreateMemberAsync();
+        await AddMembershipAsync(id, new { startDate = Day(-30), endDate = Day(30), credits = 0 });
+
+        AssertDenied(await CheckInAsync(dni), "NoCredits");
+    }
+
+    [Fact]
+    public async Task Check_in_with_an_unknown_dni_is_denied_with_MemberNotFound_and_still_returns_200()
+    {
+        var body = await CheckInAsync("00000001");
+
+        AssertDenied(body, "MemberNotFound");
+        Assert.Equal(JsonValueKind.Null, body.GetProperty("memberId").ValueKind);
+    }
+
+    // ---------- Créditos y reingreso ----------
+
     [Fact]
     public async Task Credit_is_consumed_on_the_first_check_in_and_not_on_the_reentry()
     {
@@ -113,15 +154,14 @@ public class GymApiTests : IClassFixture<GymApiFactory>
         Assert.Equal(1, reentry.GetProperty("creditsRemaining").GetInt32());
     }
 
-
     [Fact]
     public async Task Check_in_history_lists_every_attempt_newest_first()
     {
         var (id, dni) = await CreateMemberAsync();
 
-        AssertDenied(await CheckInAsync(dni), "NoActiveMembership");               // 1Âº: todavÃ­a sin miembrosÃ­a
+        AssertDenied(await CheckInAsync(dni), "NoActiveMembership");               // 1º: todavía sin membresía
         await AddMembershipAsync(id, new { startDate = Day(-30), endDate = Day(30) });
-        Assert.True((await CheckInAsync(dni)).GetProperty("allowed").GetBoolean()); // 2Âº: aprobado
+        Assert.True((await CheckInAsync(dni)).GetProperty("allowed").GetBoolean()); // 2º: aprobado
 
         var response = await _client.GetAsync($"/members/{id}/check-ins");
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -196,45 +236,7 @@ public class GymApiTests : IClassFixture<GymApiFactory>
 
     // ---------- Helpers ----------
 
-
-    [Fact]
-    public async Task Check_in_is_denied_with_NoCredits_when_the_membership_has_no_credits()
-    {
-        var (id, dni) = await CreateMemberAsync();
-        await AddMembershipAsync(id, new { startDate = Day(-30), endDate = Day(30), credits = 0 });
-
-        AssertDenied(await CheckInAsync(dni), "NoCredits");
-    }
-
-    [Fact]
-    public async Task Check_in_with_an_unknown_dni_is_denied_with_MemberNotFound_and_still_returns_200()
-    {
-        var body = await CheckInAsync("00000001");
-
-        AssertDenied(body, "MemberNotFound");
-        Assert.Equal(JsonValueKind.Null, body.GetProperty("memberId").ValueKind);
-    }
-
-    // ---------- CrÃ©ditos y reingreso ----------
-
-    public async Task Create_member_with_invalid_dni_returns_400()
-    {
-        var response = await _client.PostAsJsonAsync("/members", new { name = "Ana", dni = "abc" });
-
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-    }
-
-    // ---------- Ingresos: aprobado y un caso por motivo de rechazo ----------
-
-    public GymApiTests(GymApiFactory factory)
-    {
-        _client = factory.CreateClient();
-    }
-
-    // ---------- Socios ----------
-}
-
-
+    /// <summary>Fecha relativa a "hoy" según el reloj de test, en formato yyyy-MM-dd.</summary>
     private static string Day(int offsetDays) => TestData.Today.AddDays(offsetDays).ToString("yyyy-MM-dd");
 
     private static async Task<JsonElement> ReadAsync(HttpResponseMessage response) =>
@@ -265,7 +267,7 @@ public class GymApiTests : IClassFixture<GymApiFactory>
         return (await ReadAsync(response)).GetProperty("id").GetInt32();
     }
 
-    /// <summary>Un rechazo es una respuesta vŠlida: siempre 200, con allowed=false y el motivo como texto.</summary>
+    /// <summary>Un rechazo es una respuesta válida: siempre 200, con allowed=false y el motivo como texto.</summary>
     private async Task<JsonElement> CheckInAsync(string dni)
     {
         var response = await _client.PostAsJsonAsync("/check-ins", new { dni });
@@ -280,5 +282,3 @@ public class GymApiTests : IClassFixture<GymApiFactory>
         Assert.Equal(reason, body.GetProperty("reason").GetString());
     }
 }
-
-    }
