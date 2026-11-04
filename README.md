@@ -25,7 +25,7 @@ Queda escuchando en `http://localhost:5080` (Swagger en `http://localhost:5080/s
 dotnet test
 ```
 
-Son tests de las reglas de ingreso (puros, sin base de datos) y de la orquestación contra SQLite en memoria.
+Hay tres niveles: tests de las reglas de ingreso (puros, sin base de datos), de la orquestación contra SQLite en memoria (créditos, reingreso, concurrencia) y de la API completa por HTTP con `WebApplicationFactory` (rutas, códigos de estado y JSON).
 
 ## Configuración
 
@@ -166,6 +166,6 @@ src/GymAccess/
   Data/           DbContext de EF Core
   Controllers/    Endpoints HTTP
   Contracts/      DTOs de request/response
-tests/GymAccess.Tests/
+tests/GymAccess.Tests/   Reglas (unitarios), servicio (SQLite en memoria) y API (HTTP)
 postman/
 ```
