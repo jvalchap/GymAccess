@@ -9,8 +9,6 @@ ASP.NET Core 8 (controllers) · EF Core + SQLite · xUnit.
 
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
 
-No hace falta nada más: la base SQLite (`gymaccess.db`) se crea sola al arrancar.
-
 ## Correr la API
 
 ```bash
@@ -19,7 +17,7 @@ dotnet run --project src/GymAccess
 
 Queda escuchando en `http://localhost:5080` (Swagger en `http://localhost:5080/swagger`).
 
-## Correr los tests
+## Tests
 
 ```bash
 dotnet test
@@ -45,8 +43,7 @@ Hay tres niveles: tests de las reglas de ingreso (puros, sin base de datos), de 
 | `ReentryWindowHours` | Ventana de reingreso sin descontar otro crédito (2 por enunciado). |
 | `TimeZoneId` | Zona horaria del gimnasio: define "hoy" y la hora local para vigencia, deudas y franja horaria. |
 
-Cualquier valor se puede pisar por variable de entorno, por ejemplo `Gym__DebtTolerance=0 dotnet run --project src/GymAccess`.
-
+Cualquier valor se puede pisar por variable de entorno. En PowerShell: `$env:Gym__DebtTolerance = 0; dotnet run --project src/GymAccess`. En bash: `Gym__DebtTolerance=0 dotnet run --project src/GymAccess`.
 
 ## Base de datos y migraciones
 
@@ -164,6 +161,7 @@ src/GymAccess/
   Rules/          Reglas de ingreso (puras) y el evaluador que las encadena
   Services/       CheckInService (orquesta y persiste), reloj, helpers
   Data/           DbContext de EF Core
+  Migrations/     Migraciones del esquema (EF Core)
   Controllers/    Endpoints HTTP
   Contracts/      DTOs de request/response
 tests/GymAccess.Tests/   Reglas (unitarios), servicio (SQLite en memoria) y API (HTTP)

@@ -36,8 +36,8 @@
 - **Reloj inyectable (`IClock`)** para testear ventanas de tiempo sin dormir ni depender de la hora real.
 - **Controllers finos que usan el `DbContext` directamente** para los endpoints CRUD (crear socio, membresía, deuda). No metí repositorios ni capa de aplicación: serían pasamanos sin lógica. Si esos endpoints ganan reglas de negocio, el siguiente paso es sacarlas a servicios, como ya hice con el ingreso.
 - **Concurrencia: optimista, no un lock.** El saldo de créditos es un *token de concurrencia* de EF Core: el `UPDATE` solo se aplica si el saldo sigue siendo el que leímos. Si dos ingresos del mismo socio se pisan, el segundo `SaveChanges` falla con `DbUpdateConcurrencyException`, se descartan sus cambios y se **vuelve a decidir** con datos frescos (hasta 3 intentos). Al reintentar ya aparece el ingreso del primero, así que el segundo se resuelve como reingreso: se descuenta un solo crédito, que es lo que corresponde. Lo elegí sobre un `SemaphoreSlim` porque el lock solo protege dentro de un proceso, y sobre un `UPDATE ... WHERE CreditsRemaining > 0` porque ese evita saldos negativos pero **no** evita descontar dos créditos por una carrera de reingreso. Tiene tests que reproducen la carrera de verdad (`CheckInServiceTests`).
-- **Migraciones de EF Core.** El esquema est� versionado en `src/GymAccess/Migrations`, y al arrancar la API aplica las pendientes con `Database.Migrate()` (si no existe la base, la crea). Sigue cumpliendo `dotnet run` sin configuraci�n adicional y, a diferencia de `EnsureCreated`, permite evolucionar el esquema sin borrar datos. Contrapartida: cada cambio de modelo exige generar una migraci�n.
-- **Tests**: unitarios de reglas (la mayoría), más tests del servicio contra SQLite en memoria para lo que sí depende de la base: descuento persistido, reingreso, registro de rechazos.
+- **Migraciones de EF Core.** El esquema está versionado en `src/GymAccess/Migrations` y, al arrancar, la API aplica las pendientes con `Database.Migrate()` (si no existe la base, la crea). Sigue cumpliendo "`dotnet run` sin configuración adicional" y, a diferencia de `EnsureCreated`, permite evolucionar el esquema sin borrar datos. Contrapartida: cada cambio de modelo exige generar una migración.
+- **Tests, en tres niveles**: unitarios de reglas (la mayoría, rápidos y sin infraestructura); del servicio contra SQLite en memoria, para lo que sí depende de la base (descuento persistido, reingreso, carreras de concurrencia); y de la API completa por HTTP con `WebApplicationFactory`, con reloj fijo, para rutas, validación, códigos de estado y serialización (por ejemplo, que `reason` viaje como texto). Postman queda como evidencia manual y ejecutable por quien evalúe.
 
 ## 3. Qué tocaría para agregar una regla de ingreso nueva
 
@@ -46,26 +46,25 @@ Ejemplo: "máximo 1 ingreso por día" o "socio suspendido".
 1. **Crear la regla** en `src/GymAccess/Rules/`, implementando `ICheckInRule`. Es una clase de ~10 líneas.
 2. **Registrarla en `CheckInRules.CreateDefault()`** en la posición que le corresponda: el orden es la prioridad del motivo.
 3. **Si necesita un motivo nuevo**: agregar el valor a `DenialReason` y su texto en `CheckInMessages` (`Contracts/Responses.cs`). El motivo se serializa como string, así que no rompe a los clientes.
-4. **Si necesita datos que hoy no se cargan** (por ejemplo, los ingresos del día, o un flag de suspensión en `Member`): agregarlos a `CheckInInput` / `CheckInContext` y cargarlos en `CheckInService.RegisterAsync`.
-5. **Tests**: casos nuevos en `CheckInRulesTests` y, si corresponde, una carpeta más en la colección de Postman.
+4. **Si necesita datos que hoy no se cargan** (por ejemplo, los ingresos del día, o un flag de suspensión en `Member`): agregarlos a `CheckInInput` / `CheckInContext` y cargarlos en `CheckInService` (donde se leen los datos del socio).
+5. **Tests**: casos nuevos en `CheckInRulesTests` y quizás, una carpeta más en la colección de Postman
 
 No hay que tocar `CheckInEvaluator`, los controllers ni el resto de las reglas.
 
 ## 4. Qué mejoraría con más tiempo
 
-- **Migraciones de EF Core** en lugar de `EnsureCreated` (hoy un cambio de esquema obliga a borrar `gymaccess.db`).
 - **Idempotencia en `POST /check-ins`**: si el molinete reintenta por un timeout, hoy podría registrar dos ingresos.
 - **Autenticación** (al menos una API key para el molinete) y autorización para los endpoints administrativos.
-- **Tests de integración HTTP** con `WebApplicationFactory`, para cubrir serialización, validación y códigos de estado (hoy eso lo cubre la colección de Postman).
 - **Paginación y filtros** en el historial de ingresos.
-- **Modelo de franjas más rico**: días de la semana, varias franjas por membresía.
-- **Operación**: Dockerfile, CI que corra `dotnet test`, logging estructurado de cada decisión de ingreso.
+- **Modelo de franjas con más datos**: días de la semana, varias franjas por membresía.
 - **Tolerancia por sede o por plan** en lugar de un único valor global.
 
 ## 5. Uso de IA
 
-Usé **Claude (Anthropic)** para construir este proyecto: la estructura del repo, el código, los tests, la colección de Postman y estos documentos. Las decisiones de diseño de la sección 1 (sobre todo cómo interactúan el reingreso y los créditos, y el orden de prioridad de los motivos) surgieron de ese trabajo y son las que yo debería poder defender en la conversación.
+Usé **Claude** y **Cursor** como asistentes durante todo el proyecto: estructura de la solución, código, tests y colección de Postman. Las decisiones de diseño de la sección 1 (sobre todo cómo interactúan el reingreso y los créditos, y el orden de prioridad de los motivos) surgieron de charlar con la IA las dudas que me iban surgiendo.
 
-Limitación a tener en cuenta: el entorno donde se generó el código no tenía el SDK de .NET, por lo que no se pudo compilar ni correr `dotnet test` ahí. La verificación (build, tests y la colección de Postman contra la API levantada) hay que hacerla en una máquina con .NET 8.
+**Cómo se refleja en el historial:** los primeros commits (esqueleto, dominio, reglas, tests, API, Postman y documentación) los generó la IA en bloque. Los cambios posteriores los fui aplicando y commiteando yo, uno por vez, corriendo `dotnet test` en cada paso: registro de intentos con DNI desconocido, concurrencia optimista, migraciones y tests de integración HTTP.
 
-<!-- TODO (completar antes de entregar): qué revisaste vos a mano, qué cambiaste y el resultado de dotnet test / Postman. -->
+**Verificación:** el código inicial se generó sin poder compilarlo; lo compilé y probé yo en mi máquina con .NET 8. 
+
+Acá debería completar con el resultado de correr lo de postman completo y que partes ufncionan
