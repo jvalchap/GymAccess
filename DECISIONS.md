@@ -65,6 +65,8 @@ Usé **Claude** y **Cursor** como asistentes durante todo el proyecto: estructur
 
 **Cómo se refleja en el historial:** los primeros commits (esqueleto, dominio, reglas, tests, API, Postman y documentación) los generó la IA en bloque. Los cambios posteriores los fui aplicando y commiteando yo, uno por vez, corriendo `dotnet test` en cada paso: registro de intentos con DNI desconocido, concurrencia optimista, migraciones y tests de integración HTTP.
 
-**Verificación:** el código inicial se generó sin poder compilarlo; lo compilé y probé yo en mi máquina con .NET 8. 
+**Verificación:** el código inicial se generó sin poder compilarlo. Lo compilé y probé en mi máquina con .NET 8. Al sumar los tests HTTP aparecieron errores de compilación: el archivo de tests quedó mal armado y faltaban la referencia a `Microsoft.AspNetCore.Mvc.Testing` y la clase parcial `Program`. Los corregí y generé la migración inicial con `dotnet ef`, que no se había creado.
 
-Acá debería completar con el resultado de correr lo de postman completo y que partes ufncionan
+Resultado final:
+- `dotnet test`: 59 tests, todos en verde.
+- Colección de Postman corrida completa con el Collection Runner contra la API levantada: todos los requests pasan, incluido el ingreso aprobado y un rechazo por cada motivo (`NoActiveMembership`, `OverdueDebt`, `OutsideTimeSlot`, `NoCredits`, `MemberNotFound`).
